@@ -1,11 +1,14 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Wine processes daemonizer.
+Wine processes daemonizer. Inspired by 'A simple unix/linux daemon in Python'
+(http://www.jejik.com/articles/2007/02/a_simple_unix_linux_daemon_in_python).
 """
 import atexit
 import os
+import signal
 import sys
+import threading
 import time
 
 from signal import SIGTERM
@@ -20,48 +23,84 @@ class WineDaemon(object):
 
     cmd_prefix = 'cmd_'
     process = None
+    hup_event = None
 
-    def __init__(self, exe_path,
+    def __init__(self, exe_path, timeout=30.0,
                  stdin='/dev/null', stdout='/dev/null', stderr='/dev/null'):
+        """
+        Init the daemon. Parameters:
+            `exe_path`  - path to 'exe' file to be run under Wine.
+            `timeout`   - timeout to wait the subprocess to start. Exit daemon
+                          start with failure, if timeout will expire.
+            `stdin`,
+            `stdout`,
+            `stderr`    - paths to files to redirect daemon's
+                          (not subprocess' !) IO to.
+        """
         exe_name = os.path.basename(exe_path)
         pid_name = "{name}.pid".format(name=os.path.splitext(exe_name)[0])
 
         self.exe_path = exe_path
         self.pid_path = os.path.join(os.path.dirname(exe_path), pid_name)
 
+        self.timeout = timeout
         self.stdin = stdin
         self.stdout = stdout
         self.stderr = stderr
 
     def _daemonize(self):
         """
-        do the UNIX double-fork magic, see Stevens' "Advanced
-        Programming in the UNIX Environment" for details (ISBN 0201563177).
+        Do the UNIX double-fork magic, see Stevens' "Advanced Programming in
+        the UNIX Environment", chapter 13 'Daemon Processes', section 'Coding
+        rules' for details (ISBN 978-0-321-63773-4).
+
+        See also: http://web.archive.org/web/20120914180018/http://www.steve.org.uk/Reference/Unix/faq_2.html#SEC16
         """
-        # do first fork
+        # Get pid of current process wich will be the grandparent of daemon.
+        ppid = os.getpid()
+
+        # Clear file creation mask.
+        os.umask(0)
+
+        # Create event for waiting SIGHUP.
+        self.hup_event = threading.Event()
+        self.hup_event.clear()
+        # Set handler for SIGHUP.
+        signal.signal(signal.SIGHUP, self.on_sighup)
+
+        # Become a session leader to lose controlling TTY.
         try:
             pid = os.fork()
-            if pid > 0:
-                sys.exit(0)
         except OSError as e:
             sys.stderr.write("fork #1 failed: ({errno}) {errmsg}\n".format(
                              errno=e.errno, errmsg=e.strerror))
             sys.exit(1)
-
-        # decouple from parent environment
-        os.chdir("/")
+        else:
+            if pid > 0:
+                # Block terminal untill daemon start is done or timed out.
+                if self.hup_event.wait(timeout=self.timeout):
+                    sys.exit(0)
+                else:
+                    sys.stderr.write("Daemon start timed out!")
+                    sys.exit(1)
+        # Call setsid to create a new session.
         os.setsid()
-        os.umask(0)
+        # Change the current working directory to the root so we won’t prevent
+        # file systems from being unmounted.
+        os.chdir("/")
 
-        # do second fork
+        # Exit the parent (the session group leader), so we can never regain a
+        # controlling terminal.
         try:
             pid = os.fork()
-            if pid > 0:
-                sys.exit(0)
         except OSError as e:
             sys.stderr.write("fork #2 failed: ({errno}) {errmsg}\n".format(
                              errno=e.errno, errmsg=e.strerror))
             sys.exit(1)
+        else:
+            if pid > 0:
+                # Exit parent process.
+                sys.exit(0)
 
         process_info = ["wine", self.exe_path]
         try:
@@ -72,7 +111,7 @@ class WineDaemon(object):
                     info=' '.join(process_info), e=str(err)))
             sys.exit(1)
 
-        # redirect standard file descriptors
+        # Redirect standard file descriptors.
         sys.stdout.flush()
         sys.stderr.flush()
         si = file(self.stdin, 'r')
@@ -82,9 +121,18 @@ class WineDaemon(object):
         os.dup2(so.fileno(), sys.stdout.fileno())
         os.dup2(se.fileno(), sys.stderr.fileno())
 
-        # write pidfile
+        # Write subprocess' pid to pidfile.
         atexit.register(self._remove_pid_file)
         file(self.pid_path, 'w+').write("{pid}\n".format(pid=self.process.pid))
+
+        # Call child's handler of process creation event.
+        self.post_start()
+        # Unblock the grandparent.
+        os.kill(ppid, signal.SIGHUP)
+
+    def on_sighup(self, signum, frame):
+        if self.hup_event is not None:
+            self.hup_event.set()
 
     def _remove_pid_file(self):
         if os.path.exists(self.pid_path):
@@ -93,7 +141,7 @@ class WineDaemon(object):
     @property
     def pid(self):
         """
-        Get PID of Windows process.
+        Get PID of Windows' subprocess.
         """
         try:
             pf = file(self.pid_path, 'r')
@@ -108,6 +156,9 @@ class WineDaemon(object):
         return pid
 
     def cmd_status(self):
+        """
+        Public command for printing daemon's status.
+        """
         if self.pid:
             sys.stdout.write(
                 "Daemon is running (pid={pid}).\n".format(pid=self.pid))
@@ -116,21 +167,20 @@ class WineDaemon(object):
 
     def cmd_start(self):
         """
-        Start the daemon.
+        Public command for starting the daemon.
         """
         if self.pid:
             sys.stderr.write("pidfile '{path}' already exist. Daemon already "
                              "running?\n".format(path=self.pid_path))
             sys.exit(1)
 
-        # Start the daemon
+        # Start the daemon.
         self._daemonize()
-        if self.process is not None:
-            self.run()
+        self.run()
 
     def cmd_stop(self):
         """
-        Stop the daemon.
+        Public command for stopping the daemon.
         """
         pid = self.pid
         if not pid:
@@ -138,7 +188,7 @@ class WineDaemon(object):
                              "running?\n".format(path=self.pid_path))
             return # not an error in a restart
 
-        # Try killing the daemon process
+        # Try to kill the daemon process.
         try:
             while 1:
                 os.kill(pid, SIGTERM)
@@ -154,16 +204,26 @@ class WineDaemon(object):
 
     def cmd_restart(self):
         """
-        Restart the daemon.
+        Public command for restarting the daemon.
         """
         self.cmd_stop()
         self.cmd_start()
 
+    def post_start(self):
+        """
+        This method will be called just after process has spawned. You can use
+        this method to block the calling terminal until you will be sure that a
+        subprocess has successfully started and it can communicate with the
+        outside world. Note that the parent has a timeout on waiting the daemon
+        to start. If timeout will expire before this method exists, then parent
+        will exit with error.
+        """
+
     def run(self):
         """
-        You can override this method when you subclass WineDaemon. It will be
-        called after the process has been _daemonized by cmd_start() or
-        cmd_restart(). By default this method waits for subprocess to finish.
+        This method will be called after the process has been _daemonized by
+        cmd_start() or cmd_restart(). By default this method waits for
+        subprocess to finish.
         """
         self.process.wait()
 
