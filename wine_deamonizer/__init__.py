@@ -21,7 +21,7 @@ class WineDaemon(object):
     Run a Windows process under Wine as a Unix daemon.
     """
 
-    cmd_prefix = 'cmd_'
+    prefix = 'cmd_'
     process = None
     hup_event = None
 
@@ -232,15 +232,14 @@ class WineDaemon(object):
         """
         Get list of public commands without prefixes.
         """
-        return [name.lstrip(self.cmd_prefix) for name in dir(self)
-                if name.startswith(self.cmd_prefix)]
+        return [name.lstrip(self.prefix) for name in dir(self)
+                if name.startswith(self.prefix)]
 
     def __call__(self, cmd_name):
         """
         Call public command by name without prefix.
         """
-        real_name = "{prefix}{name}".format(prefix=self.cmd_prefix,
-                                            name=cmd_name)
+        real_name = "{prefix}{name}".format(prefix=self.prefix, name=cmd_name)
         result = hasattr(self, real_name)
         try:
             getattr(self, real_name)()
