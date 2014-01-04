@@ -9,7 +9,16 @@ Run Windows processes under Wine as Unix daemons.
 Installation
 ------------
 
+Via PyPI:
+
     pip install wine-deamonizer
+
+As an Ubuntu package:
+
+    sudo apt-add-repository "deb http://ppa.launchpad.net/il2horus/main/ubuntu precise main"
+    sudo apt-get update
+
+    sudo apt-get install python-wine-deamonizer
 
 Dependencies
 ------------
