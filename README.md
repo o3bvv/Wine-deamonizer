@@ -15,7 +15,7 @@ Via PyPI:
 
 As an Ubuntu package:
 
-    sudo apt-add-repository "deb http://ppa.launchpad.net/il2horus/main/ubuntu precise main"
+    sudo add-apt-repository ppa:il2horus/ppa
     sudo apt-get update
 
     sudo apt-get install python-wine-deamonizer
